@@ -7,7 +7,7 @@ import (
 
 const (
 	asKey  = "ARC-Seal"
-	amsKey = "ARC-Message-signature"
+	amsKey = "ARC-Message-Signature"
 	aarKey = "ARC-Authentication-Results"
 )
 
@@ -16,8 +16,8 @@ var (
 	ErrInstanceMismatch      = errors.New("mismatch of arc header instances")
 	ErrArcLimit              = errors.New("message over arc-set limit")
 	ErrMsgNotSigned          = errors.New("message is not arc signed")
-	ErrAMSValidationFailure  = errors.New("most recent ARC-Message-signature did not validate")
-	ErrAMSIncludesSealHeader = errors.New("Arc-Message-signature MUST NOT sign ARC-Seal")
+	ErrAMSValidationFailure  = errors.New("most recent ARC-Message-Signature did not validate")
+	ErrAMSIncludesSealHeader = errors.New("Arc-Message-Signature MUST NOT sign ARC-Seal")
 
 	requiredAARTags = fInstance
 	requiredASTags  = fAlgorithm + fHash + fSignerDomain + fSelector + fInstance + fCv
@@ -60,7 +60,7 @@ type arcSet struct {
 	seal *Signature
 }
 
-func (s *arcSet) verify(instance int, msg *Message) (*arcResult, *VerificationError) {
+func (s *arcSet) verify(lookupTXT TxtLookupFunc, pkey *PublicKey, instance int, msg *Message) (*arcResult, *VerificationError) {
 	if contains(s.messageSignature.Headers, "arc-seal") {
 		return nil, &VerificationError{
 			Err:    ErrAMSIncludesSealHeader,
@@ -70,16 +70,16 @@ func (s *arcSet) verify(instance int, msg *Message) (*arcResult, *VerificationEr
 		}
 	}
 
-	// Validate Arc-Message-signature
-	res := s.messageSignature.verify(msg)
+	// Validate Arc-Message-Signature
+	res := s.messageSignature.verify(msg, lookupTXT, pkey)
 	arcRes := &arcResult{}
-	if res.Result == Pass {
+	if res.Code == Pass {
 		arcRes.amsValid = true
 	}
 
 	// Validate Arc-Seal
-	res = s.seal.verify(msg)
-	if res.Result == Pass {
+	res = s.seal.verify(msg, lookupTXT, pkey)
+	if res.Code == Pass {
 		arcRes.asValid = true
 	}
 
@@ -101,14 +101,14 @@ func (s *Signature) isArc() bool {
 // VerifyArc
 //
 // https://www.rfc-editor.org/rfc/rfc8617.html#section-5.2
-func VerifyArc(msg *Message) (*ArcResult, error) {
+func VerifyArc(lookupTXT TxtLookupFunc, pkey *PublicKey, msg *Message) (*ArcResult, error) {
 	if msg == nil || len(msg.Header) == 0 || msg.Body == nil {
-		return &ArcResult{Result: Result{Result: None}}, nil
+		return &ArcResult{Result: Result{Code: None}}, nil
 	}
 
 	arcSets, err := extractArcSets(msg.Header)
 	if err != nil {
-		return &ArcResult{Result: Result{Result: Fail, Error: &VerificationError{Source: VerifyError, Err: err}}}, nil
+		return &ArcResult{Result: Result{Code: Fail, Error: &VerificationError{Source: VerifyError, Err: err}}}, nil
 	}
 
 	//	"The maximum number of ARC Sets that can be attached to a
@@ -117,9 +117,9 @@ func VerifyArc(msg *Message) (*ArcResult, error) {
 	l := len(arcSets)
 	switch {
 	case l == 0:
-		return &ArcResult{Result: Result{Result: None, Error: &VerificationError{Source: VerifyError, Err: ErrMsgNotSigned}}}, nil
+		return &ArcResult{Result: Result{Code: None, Error: &VerificationError{Source: VerifyError, Err: ErrMsgNotSigned}}}, nil
 	case l > 50:
-		return &ArcResult{Result: Result{Result: Fail, Error: &VerificationError{Source: VerifyError, Err: ErrArcLimit}}}, nil
+		return &ArcResult{Result: Result{Code: Fail, Error: &VerificationError{Source: VerifyError, Err: ErrArcLimit}}}, nil
 	}
 
 	// Verify each arc set starting at the most recent
@@ -149,9 +149,9 @@ func VerifyArc(msg *Message) (*ArcResult, error) {
 
 		arcSets[i].seal.getHeadersFunc = getArcHeaders
 
-		res, err := arcSets[i].verify(i+1, msg)
+		res, err := arcSets[i].verify(lookupTXT, pkey, i+1, msg)
 		if err != nil {
-			return &ArcResult{Result: Result{Result: Fail, Error: &VerificationError{Source: VerifyError, Err: err}}, Chain: chain}, nil
+			return &ArcResult{Result: Result{Code: Fail, Error: &VerificationError{Source: VerifyError, Err: err}}, Chain: chain}, nil
 		}
 
 		chain = append(chain, ArcSetResult{
@@ -168,7 +168,7 @@ func VerifyArc(msg *Message) (*ArcResult, error) {
 	}
 
 	arcResult := func(result ResultCode, msg string, i int) *ArcResult {
-		return &ArcResult{Result: Result{Result: Fail, Error: &VerificationError{
+		return &ArcResult{Result: Result{Code: Fail, Error: &VerificationError{
 			Source:      VerifyError,
 			Explanation: msg,
 			Tag:         "i",
@@ -199,7 +199,7 @@ func VerifyArc(msg *Message) (*ArcResult, error) {
 		}
 	}
 
-	return &ArcResult{Result: Result{Result: Pass}, Chain: chain}, nil
+	return &ArcResult{Result: Result{Code: Pass}, Chain: chain}, nil
 }
 
 func extractArcSets(headers MIMEHeader) ([]*arcSet, error) {

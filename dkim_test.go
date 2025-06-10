@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"reflect"
 	"sync"
@@ -30,11 +31,11 @@ var cache = map[string]*cacheEntry{
 	`test._domainkey.football.example.com`:     {s: "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDkHlOQoBTzWRiGs5V6NpP3idY6Wk08a5qhdR6wy5bdOKb2jLQiY/J16JYi0Qvx/byYzCNb3W91y3FutACDfzwQ/BC/e/8uBsCR+yz1Lxj+PL6lHvqMKrM3rG4hstT5QjvHO9PzoxZyVYLzBfO2EeC3Ip3G+2kryOTIKT+l/K4w3QIDAQAB"},
 }
 
-func CachedPublicKeyQuery(s *Signature) (*PublicKey, error) {
+func CachedPublicKeyQuery(s *Signature, lookupTXT TxtLookupFunc) (*PublicKey, error) {
 	n := s.Selector + "._domainkey." + s.SignerDomain
 	c, found := cache[n]
 	if !found {
-		return _DNSTxtPublicKeyQuery(s)
+		return _DNSTxtPublicKeyQuery(s, lookupTXT)
 	}
 	if c.k != nil || c.e != nil {
 		return c.k, c.e
@@ -55,7 +56,7 @@ func TestDnsTxtPublicKeyQuery(t *testing.T) {
 		t.Skip("No network")
 	}
 	mustKey := func(s, d string) *PublicKey {
-		k, _ := CachedPublicKeyQuery(&Signature{Selector: s, SignerDomain: d})
+		k, _ := CachedPublicKeyQuery(&Signature{Selector: s, SignerDomain: d}, net.LookupTXT)
 		if k == nil {
 			t.FailNow()
 		}
@@ -88,7 +89,7 @@ func TestDnsTxtPublicKeyQuery(t *testing.T) {
 			continue
 		}
 		t.Run(fmt.Sprintf("%d_%s", testNo, test.name), func(t *testing.T) {
-			k, e := _DNSTxtPublicKeyQuery(test.s)
+			k, e := _DNSTxtPublicKeyQuery(test.s, net.LookupTXT)
 			if !reflect.DeepEqual(k, test.k) {
 				t.Errorf("DNSTxtPublicKeyQuery()\n\t got k=%v\n\twant k=%v", k, test.k)
 			}
@@ -482,7 +483,7 @@ func TestVerify(t *testing.T) {
 	{
 		var s *Signature
 		want := newResult(None, &VerificationError{Err: ErrSignatureNotFound}, nil, nil)
-		if got := s.verify(nil); !reflect.DeepEqual(got, want) {
+		if got := s.verify(nil, net.LookupTXT, nil); !reflect.DeepEqual(got, want) {
 			t.Errorf("nil: got %v, want %v", got, want)
 		}
 	}
@@ -499,6 +500,8 @@ func TestVerify(t *testing.T) {
 		wantErr bool
 		want    []result
 	}{
+		{"_samples/email1.eml", false, []result{{0, Pass, false, nil}}},
+		{"_samples/email2.eml", false, []result{{0, Pass, false, nil}}},
 		{"_samples/ed25519.eml", false, []result{{0, Pass, false, nil}}},
 		{"_samples/ed25519-withrsa.eml", false, []result{{0, Pass, false, nil}, {1, Pass, false, nil}}},
 		{"_samples/s001.eml", false, []result{{0, Pass, false, nil}}},
@@ -535,7 +538,7 @@ func TestVerify(t *testing.T) {
 			default:
 				t.Fatalf("can't read file: %v", e)
 			}
-			got, err := Verify("DKIM-Signature", m)
+			got, err := Verify("DKIM-Signature", m, net.LookupTXT, nil)
 
 			if test.wantErr == (err == nil) {
 				t.Errorf("Verify() err=%v,wantErr=%t", err, test.wantErr)
@@ -543,7 +546,7 @@ func TestVerify(t *testing.T) {
 
 			results := make([]result, 0, len(got))
 			for i, r := range got {
-				results = append(results, result{i, r.Result, r.Error != nil, r.Error})
+				results = append(results, result{i, r.Code, r.Error != nil, r.Error})
 			}
 
 			if diff := cmp.Diff(test.want, results, cmp.Comparer(cmpVerificationErrors)); diff != "" {
@@ -837,7 +840,7 @@ func TestVerify_Concurrent(t *testing.T) {
 				t.Errorf("error reading message %s", err)
 			}
 
-			_, _ = Verify("DKIM-Signature", m,
+			_, _ = Verify("DKIM-Signature", m, net.LookupTXT, nil,
 				InvalidSigningEntityOption("com", "co.uk", "org", "net", "io", "uk"),
 				SignatureTimingOption(5*time.Minute),
 			)

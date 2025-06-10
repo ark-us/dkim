@@ -67,15 +67,15 @@ func (h MIMEHeader) CanonicalizedAndFolded() map[string][]string {
 //
 // Given that input, ReadMIMEHeader returns the map:
 //
-//  map[string][]KVPair{
-//      "My-Key": {
-//          {"my-key", "Value 1", "Value 1"},
-//		    {"My-Key", "Value 2", "Value 2"},
-//	    },
-//	    "Long-Key": {
-//		    {"Long-Key", "Even\n       Longer Value", "Even Longer Value"},
-//	    },
-//  }
+//	 map[string][]KVPair{
+//	     "My-Key": {
+//	         {"my-key", "Value 1", "Value 1"},
+//			    {"My-Key", "Value 2", "Value 2"},
+//		    },
+//		    "Long-Key": {
+//			    {"Long-Key", "Even\n       Longer Value", "Even Longer Value"},
+//		    },
+//	 }
 func (r *Reader) ReadMIMEHeader() (MIMEHeader, error) {
 	m := make(MIMEHeader, r.upcomingHeaderNewlines())
 
@@ -326,11 +326,12 @@ const toLower = 'a' - 'A'
 
 // validHeaderFieldByte reports whether b is a valid byte in a header
 // field name. RFC 7230 says:
-//   header-field   = field-name ":" OWS field-value OWS
-//   field-name     = token
-//   tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
-//           "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
-//   token = 1*tchar
+//
+//	header-field   = field-name ":" OWS field-value OWS
+//	field-name     = token
+//	tchar = "!" / "#" / "$" / "%" / "&" / "'" / "*" / "+" / "-" / "." /
+//	        "^" / "_" / "`" / "|" / "~" / DIGIT / ALPHA
+//	token = 1*tchar
 func validHeaderFieldByte(b byte) bool {
 	return int(b) < len(isTokenTable) && isTokenTable[b]
 }

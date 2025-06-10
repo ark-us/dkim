@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,10 +21,17 @@ import (
 
 const MinRSAKeyLen = 1024
 
+type VerifyOptions struct {
+	// LookupTXT returns the DNS TXT records for the given domain name. If nil,
+	// net.LookupTXT is used.
+	LookupTXT       func(domain string) ([]string, error)
+	SkipExpiryCheck bool
+}
+
 // Result holds all details about result of DKIM signature verification
 type Result struct {
 	Order     int                `json:"order"`
-	Result    ResultCode         `json:"code"`
+	Code      ResultCode         `json:"code"`
 	Error     *VerificationError `json:"error,omitempty"`
 	Signature *Signature         `json:"signature,omitempty"`
 	Key       *PublicKey         `json:"key,omitempty"`
@@ -34,7 +40,7 @@ type Result struct {
 
 func newResult(c ResultCode, e *VerificationError, s *Signature, k *PublicKey) *Result {
 	return &Result{
-		Result:    c,
+		Code:      c,
 		Signature: s,
 		Key:       k,
 		Error:     e,
@@ -124,7 +130,9 @@ type VerificationError struct {
 
 func (e *VerificationError) Error() string {
 	var w bytes.Buffer
-	w.WriteString(e.Err.Error())
+	if e.Err != nil {
+		w.WriteString(e.Err.Error())
+	}
 	if e.Explanation == "" {
 		return w.String()
 	}
@@ -660,12 +668,14 @@ func InvalidSigningEntityOption(domains ...string) VerifyOption {
 	}
 }
 
+type TxtLookupFunc func(domain string) ([]string, error)
+
 // PublicKeyQuery defines API for implementation of "q=".
-type PublicKeyQuery func(*Signature) (*PublicKey, error)
+type PublicKeyQuery func(*Signature, TxtLookupFunc) (*PublicKey, error)
 
 // DNSTxtPublicKeyQuery provides implementation of "dns/txt" query.
-func _DNSTxtPublicKeyQuery(s *Signature) (*PublicKey, error) {
-	records, err := net.LookupTXT(s.Selector + "._domainkey." + s.SignerDomain)
+func _DNSTxtPublicKeyQuery(s *Signature, lookupTXT TxtLookupFunc) (*PublicKey, error) {
+	records, err := lookupTXT(s.Selector + "._domainkey." + s.SignerDomain)
 	if err != nil {
 		// Assume lookup errors are temporary
 		// TODO better error handling
@@ -906,7 +916,7 @@ func compareDomains(u, d string, strict bool) bool {
 	return strings.HasSuffix(u, d)
 }
 
-func (s *Signature) verify(m *Message, options ...VerifyOption) (result *Result) {
+func (s *Signature) verify(m *Message, lookupTXT TxtLookupFunc, pkey *PublicKey, options ...VerifyOption) (result *Result) {
 	// TODO cache result
 	if s == nil {
 		return newResult(None, &VerificationError{Err: ErrSignatureNotFound}, s, nil)
@@ -916,7 +926,11 @@ func (s *Signature) verify(m *Message, options ...VerifyOption) (result *Result)
 		return &VerificationError{Source: VerifyError, Err: err, Explanation: exp, Tag: tag}
 	}
 
-	pkey, err := s.query(s)
+	var err error
+	if pkey == nil {
+		pkey, err = s.query(s, lookupTXT)
+	}
+
 	switch {
 	case err == ErrKeyUnavailable || pkey == nil:
 		return newResult(Temperror, wrapErr(ErrKeyUnavailable, "", "s"), s, nil)
@@ -1088,9 +1102,9 @@ func canonicalizedHeader(k, v string, relaxed bool) []byte {
 
 // Verify extracts DKIM signature from message, verifies it and returns Result
 // of verification in accordance with RFC6376 (DKIM Signatures)
-func Verify(hdr string, msg *Message, opts ...VerifyOption) ([]*Result, error) {
+func Verify(hdr string, msg *Message, lookupTXT TxtLookupFunc, pkey *PublicKey, opts ...VerifyOption) ([]*Result, error) {
 	if msg == nil || len(msg.Header) == 0 || msg.Body == nil {
-		return []*Result{{Result: None}}, nil
+		return []*Result{{Code: None}}, nil
 	}
 
 	sigs := msg.Header[CanonicalMIMEHeaderKey(hdr)]
@@ -1101,12 +1115,12 @@ func Verify(hdr string, msg *Message, opts ...VerifyOption) ([]*Result, error) {
 	for i, raw := range sigs {
 		var r *Result
 		if _, err := msg.Body.Seek(0, io.SeekStart); err != nil {
-			r = &Result{Result: Temperror, Error: &VerificationError{Err: err, Explanation: "internal error (seek to 0 failed)"}}
+			r = &Result{Code: Temperror, Error: &VerificationError{Err: err, Explanation: "internal error (seek to 0 failed)"}}
 		} else {
 			if s, err := parseSignature(hdr, raw.Folded, raw.Original, requiredTags); err != nil {
 				r = newResult(Permerror, err, s, nil)
 			} else {
-				r = s.verify(msg, opts...)
+				r = s.verify(msg, lookupTXT, pkey, opts...)
 			}
 		}
 		r.Order = i
@@ -1114,7 +1128,7 @@ func Verify(hdr string, msg *Message, opts ...VerifyOption) ([]*Result, error) {
 		results = append(results, r)
 	}
 	if len(results) == 0 {
-		return []*Result{{Result: None}}, nil
+		return []*Result{{Code: None}}, nil
 	}
 
 	return results, nil
@@ -1129,7 +1143,7 @@ func (r *Result) String() string {
 	}
 	var w bytes.Buffer
 
-	w.WriteString(r.Result.String())
+	w.WriteString(r.Code.String())
 
 	if r.Error != nil {
 		w.WriteString("; problem=")
@@ -1185,6 +1199,14 @@ func extractResultCode(value string) ResultCode {
 		return Pass
 	case "fail":
 		return Fail
+	case "neutral":
+		return Neutral
+	case "policy":
+		return Policy
+	case "temperror":
+		return Temperror
+	case "permerror":
+		return Permerror
 	default:
 		return 0
 	}

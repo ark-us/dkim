@@ -4,11 +4,19 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"testing"
 
+	_ "embed"
+
 	"gopkg.in/yaml.v2"
+)
+
+var (
+	//go:embed _samples/emailARC3.eml
+	EmailARC3 string
 )
 
 type Document struct {
@@ -58,16 +66,38 @@ func TestVerifyArc(t *testing.T) {
 					t.Fatal(err)
 				}
 
-				result, err := VerifyArc(msg)
+				result, err := VerifyArc(net.LookupTXT, nil, msg)
 				if err != nil {
 					fmt.Println(err)
 				}
 
-				if result.Result.Result.String() != strings.ToLower(test.CV) {
+				if result.Result.Code.String() != strings.ToLower(test.CV) {
 					t.Errorf("VerifyArc() got=%v, want=%s", result.Result.String(), test.CV)
 				}
 			})
 		}
+	}
+
+	var msg *Message
+	var result *ArcResult
+
+	msg, err = ParseMessage(EmailARC3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err = VerifyArc(net.LookupTXT, nil, msg)
+	if err != nil {
+		fmt.Println(err)
+	}
+	if result.Error != nil {
+		t.Fatal(err)
+	}
+	if result.Code != Pass {
+		t.Fatal("ARC test failed")
+	}
+	if len(result.Chain) != 3 {
+		t.Fatal("expected 3 ARC sets")
 	}
 }
 
