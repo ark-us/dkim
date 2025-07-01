@@ -77,11 +77,12 @@ func TestVerifyArc(t *testing.T) {
 			})
 		}
 	}
+}
 
-	var msg *Message
+func TestVerifyArc2(t *testing.T) {
 	var result *ArcResult
 
-	msg, err = ParseMessage(EmailARC3)
+	msg, err := ParseMessage(EmailARC3)
 	if err != nil {
 		t.Fatal(err)
 	}
